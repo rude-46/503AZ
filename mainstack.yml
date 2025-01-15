@@ -1,0 +1,256 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  AdminPassword:
+    Type: String
+    NoEcho: true
+    Description: The password for the Managed AD admin user
+  StudentNumber:
+    Type: String
+    Description: The student number to tag resources
+
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: MainVPC
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+
+  PublicSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: PublicSubnet1
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+  
+  PublicSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: us-east-1b
+      Tags:
+        - Key: Name
+          Value: PublicSubnet2
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: HealthSecureIGW
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+
+  AttachGateway:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  RouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PublicRouteTable
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation1:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref RouteTable
+
+  SubnetRouteTableAssociation2:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref RouteTable
+
+  BastionSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable SSH access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: BastionSecurityGroup
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+
+  BastionHost:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: t3.medium
+      ImageId: ami-0b1f2b17be9b81cdc
+      KeyName: vockey
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          SubnetId: !Ref PublicSubnet1
+          GroupSet:
+            - !Ref BastionSecurityGroup
+      Tags:
+        - Key: Name
+          Value: BastionHost
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+
+  ManagedAD:
+    Type: 'AWS::DirectoryService::MicrosoftAD'
+    Properties:
+      Name: healthcare.local
+      Password: !Ref AdminPassword
+      VpcSettings:
+        VpcId: !Ref VPC
+        SubnetIds:
+          - !Ref PublicSubnet1
+          - !Ref PublicSubnet2
+
+  DatabaseSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable MySQL access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: DatabaseSecurityGroup
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+
+  DatabaseSubnetGroup:
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS DB instance
+      SubnetIds:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: DatabaseSubnetGroup
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+
+  HealthcareDatabase:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      DBInstanceIdentifier: mydbinstance
+      DBInstanceClass: db.t3.small
+      Engine: mysql
+      MasterUsername: admin
+      MasterUserPassword: password
+      AllocatedStorage: 20
+      PubliclyAccessible: true
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      Tags:
+        - Key: Name
+          Value: HealthcareDatabase
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+
+  PatientRecordsTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: PatientRecords
+      AttributeDefinitions:
+        - AttributeName: PatientID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PatientID
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      Tags:
+        - Key: Name
+          Value: PatientRecordsTable
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+
+  PublicS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub 'healthcare-files-${AWS::AccountId}-${AWS::Region}-${AWS::StackName}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        IgnorePublicAcls: false
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+      Tags:
+        - Key: Name
+          Value: PublicS3Bucket
+        - Key: StudentNumber
+          Value: !Ref StudentNumber
+
+  PublicS3BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref PublicS3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub 'arn:aws:s3:::${PublicS3Bucket}/*'
+
+Outputs:
+  VPCId:
+    Description: The ID of the created VPC
+    Value: !Ref VPC
+    Export:
+      Name: VPCId
+
+  PublicSubnet1Id:
+    Description: The ID of the public subnet
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: PublicSubnet1Id
+
+  DatabaseEndpoint:
+    Description: The endpoint for the RDS database
+    Value: !GetAtt HealthcareDatabase.Endpoint.Address
+    Export:
+      Name: DatabaseEndpoint
+
+  S3BucketName:
+    Description: The name of the S3 bucket
+    Value: !Ref PublicS3Bucket
+    Export:
+      Name: S3BucketName

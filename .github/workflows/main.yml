@@ -1,0 +1,53 @@
+name: Deploy CloudFormation Stacks
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+      - name: List Files
+        run: ls -R
+        working-directory: ${{ github.workspace }}
+      - name: Deploy Main Stack
+        run: |
+          aws cloudformation deploy \
+           --stack-name corestack \
+           --template-file mainstack.yml \
+           --capabilities CAPABILITY_NAMED_IAM \
+           --parameter-overrides AdminPassword=${{ secrets.ADMIN_PASSWORD }} StudentNumber=${{ secrets.STUDENT_NUMBER }}
+      - name: Install MySQL
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install mysql-client -y
+      - name: Get DatabaseEndpoint
+        id: getDatabase
+        run: |
+          echo "DB_ENDPOINT=$(aws cloudformation describe-stacks --stack-name corestack --query "Stacks[0].Outputs[?OutputKey=='DatabaseEndpoint'].OutputValue" --output text)" >> $GITHUB_ENV
+      - name: Load Database
+        run: |
+          echo "Attempting to connect to database: $DB_ENDPOINT"
+          mysql -v -h $DB_ENDPOINT -u admin -ppassword < DBQuery.sql
+          aws s3 cp patient1.pdf s3://$(aws cloudformation describe-stacks --stack-name corestack --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" --output text)/patient1.pdf
+          aws s3 cp patient2.pdf s3://$(aws cloudformation describe-stacks --stack-name corestack --query "Stacks[0].Outputs[?OutputKey=='S3BucketName'].OutputValue" --output text)/patient2.pdf
+      - name: Deploy Web Server Stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name webstack \
+            --template-file webstack.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+            VPCId=$(aws cloudformation describe-stacks --stack-name corestack --query "Stacks[0].Outputs[?OutputKey=='VPCId'].OutputValue" --output text) \
+            PublicSubnet1Id=$(aws cloudformation describe-stacks --stack-name corestack --query "Stacks[0].Outputs[?OutputKey=='PublicSubnet1Id'].OutputValue" --output text) \
+            DatabaseEndpoint=$(aws cloudformation describe-stacks --stack-name corestack --query "Stacks[0].Outputs[?OutputKey=='DatabaseEndpoint'].OutputValue" --output text)
+        working-directory: ${{ github.workspace }}
